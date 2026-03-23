@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from dippy.core.config import Config
 from conftest import is_approved, needs_confirmation
 
 
@@ -40,9 +41,7 @@ class TestPythonCodeExecution:
     @pytest.mark.parametrize(
         "cmd",
         [
-            "python -c 'print(1)'",
             "python3 -c 'import os; os.system(\"ls\")'",
-            "python -c 'x=1'",
             "python -m http.server",
             "python -m pip install foo",
             "python -m pytest",
@@ -1285,3 +1284,140 @@ print(data, counts)
 """
         violations = analyze_python_source(source)
         assert len(violations) == 0, f"Expected no violations, got {violations}"
+
+
+class TestPythonInlineCode:
+    """Tests for python -c inline code analysis."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "python -c 'print(1)'",
+            "python -c 'x=1'",
+            "python -c 'import json; json.dumps({})'",
+            "python -c 'import math; print(math.sqrt(2))'",
+            "python -c '[x**2 for x in range(10)]'",
+        ],
+    )
+    def test_safe_inline_code_approved(self, check, cmd):
+        """Safe inline code should be auto-approved."""
+        result = check(cmd)
+        assert is_approved(result), f"Expected approve: {cmd}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "python -c 'import os'",
+            "python -c 'import subprocess; subprocess.run([])'",
+            "python -c 'open(\"foo.txt\")'",
+            "python -c 'eval(\"1+1\")'",
+            "python3 -c 'import os; os.system(\"ls\")'",
+        ],
+    )
+    def test_dangerous_inline_code_needs_confirmation(self, check, cmd):
+        """Dangerous inline code should need confirmation."""
+        result = check(cmd)
+        assert needs_confirmation(result), f"Expected confirm: {cmd}"
+
+    def test_c_no_argument_needs_confirmation(self, check):
+        """python -c with no code argument should need confirmation."""
+        result = check("python -c")
+        assert needs_confirmation(result)
+
+    def test_c_empty_string_needs_confirmation(self, check):
+        """python -c '' should need confirmation."""
+        result = check("python -c ''")
+        assert needs_confirmation(result)
+
+
+class TestPythonConfigModules:
+    """Tests for configurable safe/unsafe module lists."""
+
+    def test_allow_module_via_config(self, check, tmp_path):
+        """User-allowed module should pass analysis."""
+        script = tmp_path / "use_numpy.py"
+        script.write_text("import numpy\nx = numpy.array([1, 2, 3])")
+        config = Config(python_allow_modules=["numpy"])
+        result = check(f"python {script}", config=config)
+        assert is_approved(result), "numpy should be approved via config"
+
+    def test_deny_module_via_config(self, check, tmp_path):
+        """User-denied module should be flagged even if normally safe."""
+        script = tmp_path / "use_json.py"
+        script.write_text("import json\njson.dumps({})")
+        config = Config(python_deny_modules=["json"])
+        result = check(f"python {script}", config=config)
+        assert needs_confirmation(result), "json should be denied via config"
+
+    def test_deny_overrides_safe(self, check, tmp_path):
+        """Deny should override the hardcoded safe list."""
+        script = tmp_path / "use_math.py"
+        script.write_text("import math\nprint(math.pi)")
+        config = Config(python_deny_modules=["math"])
+        result = check(f"python {script}", config=config)
+        assert needs_confirmation(result), "math should be denied via config override"
+
+    def test_config_modules_with_inline_code(self, check):
+        """Config modules should apply to -c inline code too."""
+        config = Config(python_allow_modules=["numpy"])
+        result = check("python -c 'import numpy'", config=config)
+        assert is_approved(result), "numpy should be approved in -c via config"
+
+    def test_config_deny_modules_with_inline_code(self, check):
+        """Config deny modules should apply to -c inline code too."""
+        config = Config(python_deny_modules=["json"])
+        result = check("python -c 'import json'", config=config)
+        assert needs_confirmation(result), "json should be denied in -c via config"
+
+    def test_multiple_config_modules(self, check, tmp_path):
+        """Multiple allowed modules should all work."""
+        script = tmp_path / "multi.py"
+        script.write_text("import numpy\nimport pandas\nx = 1")
+        config = Config(python_allow_modules=["numpy", "pandas"])
+        result = check(f"python {script}", config=config)
+        assert is_approved(result), "multiple config modules should work"
+
+    def test_no_config_unknown_module_blocked(self, check, tmp_path):
+        """Without config, unknown module should be blocked."""
+        script = tmp_path / "use_numpy.py"
+        script.write_text("import numpy")
+        result = check(f"python {script}")
+        assert needs_confirmation(result), "unknown module without config should ask"
+
+
+class TestUnitAnalysisConfigModules:
+    """Unit tests for analyze_python_source with extra modules."""
+
+    def test_extra_safe_module(self):
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            "import numpy", extra_safe_modules=frozenset({"numpy"})
+        )
+        assert len(violations) == 0
+
+    def test_extra_deny_module(self):
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            "import json", extra_deny_modules=frozenset({"json"})
+        )
+        assert len(violations) > 0
+        assert any("json" in v.detail for v in violations)
+
+    def test_deny_overrides_builtin_safe(self):
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            "import math", extra_deny_modules=frozenset({"math"})
+        )
+        assert len(violations) > 0
+        assert any("math" in v.detail for v in violations)
+
+    def test_from_import_respects_config(self):
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            "from numpy import array", extra_safe_modules=frozenset({"numpy"})
+        )
+        assert len(violations) == 0
