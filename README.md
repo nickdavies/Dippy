@@ -92,18 +92,24 @@ Add to `~/.cursor/hooks.json` (global) or `.cursor/hooks.json` in your project r
 {
   "version": 1,
   "hooks": {
-    "beforeShellExecution": [
-      { "command": "dippy" }
+    "preToolUse": [
+      { "matcher": "Shell", "command": "dippy" }
     ]
   }
 }
 ```
 
+The `matcher` ensures Dippy only runs for shell commands, not every tool invocation.
+
 Dippy auto-detects Cursor's input format, so no extra flags are needed. If you prefer to be explicit, use `dippy --cursor` or set `DIPPY_CURSOR=1`.
 
 Logs go to `~/.cursor/hook-approvals.log`.
 
-> **Note:** Cursor has a known bug where only the first hook in an array runs. If you have other `beforeShellExecution` hooks, Dippy must be listed first.
+> **Note:** Cursor has a known bug where only the first hook in an array runs. If you have other hooks of the same type, Dippy must be listed first.
+
+> **Note:** Cursor's `beforeShellExecution` hook has a known bug where `allow` responses are ignored — only `deny` works correctly. Use `preToolUse` instead, however this does NOT respect `ask` commands.
+
+> **Note:** Cursor's sandbox mode bypasses hook permission decisions. Commands that run in the sandbox are auto-approved regardless of what the hook returns. Only unsandboxed commands (those requiring `required_permissions`) respect `allow` and `deny` responses.
 
 If you installed manually, use the full path instead: `/path/to/Dippy/bin/dippy-hook`
 
