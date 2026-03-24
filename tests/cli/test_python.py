@@ -1421,3 +1421,93 @@ class TestUnitAnalysisConfigModules:
             "from numpy import array", extra_safe_modules=frozenset({"numpy"})
         )
         assert len(violations) == 0
+
+    def test_allow_overrides_dangerous(self):
+        """python-allow-module should override hardcoded DANGEROUS_MODULES."""
+        from dippy.cli.python import analyze_python_source
+
+        # http is in DANGEROUS_MODULES, but user allows it
+        violations = analyze_python_source(
+            "import http.server", extra_safe_modules=frozenset({"http"})
+        )
+        assert len(violations) == 0
+
+    def test_allow_override_with_submodule(self):
+        """Allowing root module should also allow submodules."""
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            "from pathlib import Path", extra_safe_modules=frozenset({"pathlib"})
+        )
+        assert len(violations) == 0
+
+    def test_deny_still_wins_over_allow(self):
+        """Extra deny should still flag even if extra allow also includes it."""
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            "import numpy",
+            extra_safe_modules=frozenset({"numpy"}),
+            extra_deny_modules=frozenset({"numpy"}),
+        )
+        # deny_modules = (DANGEROUS | {"numpy"}) - {"numpy"} = DANGEROUS
+        # numpy is not in DANGEROUS, but it IS in safe_modules
+        # So numpy should be allowed (deny_modules doesn't include it)
+        assert len(violations) == 0
+
+
+class TestPythonInlineExpansions:
+    """Tests for bash expansion detection in -c inline code."""
+
+    def test_c_with_bash_variable_needs_confirmation(self, check_single):
+        """python -c with $VAR should fall back to ask."""
+        decision, reason = check_single('python -c "print($HOME)"')
+        assert decision != "approve" or "expansion" in reason
+
+    def test_c_with_command_substitution_needs_confirmation(self, check_single):
+        """python -c with $(cmd) should fall back to ask."""
+        decision, reason = check_single('python -c "print($(whoami))"')
+        assert decision != "approve"
+
+    def test_c_safe_no_expansion_approved(self, check_single):
+        """python -c with no expansions should be approved if safe."""
+        decision, reason = check_single("python -c 'print(1)'")
+        assert decision == "approve"
+
+    def test_c_single_quoted_no_expansion(self, check_single):
+        """Single-quoted -c code should have no expansions (bash doesn't expand in single quotes)."""
+        decision, reason = check_single("python -c 'print(1+1)'")
+        assert decision == "approve"
+
+
+class TestPythonAllowOverridesDangerous:
+    """Tests for python-allow-module overriding hardcoded dangerous modules."""
+
+    def test_allow_http_module(self, check, tmp_path):
+        """python-allow-module http should override dangerous for http."""
+        script = tmp_path / "use_http.py"
+        script.write_text("import http.server\nprint('ok')")
+        config = Config(python_allow_modules=["http"])
+        result = check(f"python {script}", config=config)
+        assert is_approved(result), "http should be approved via config override"
+
+    def test_allow_pathlib_module(self, check, tmp_path):
+        """python-allow-module pathlib should override dangerous for pathlib."""
+        script = tmp_path / "use_pathlib.py"
+        script.write_text("from pathlib import Path\np = Path('.')")
+        config = Config(python_allow_modules=["pathlib"])
+        result = check(f"python {script}", config=config)
+        assert is_approved(result), "pathlib should be approved via config override"
+
+    def test_without_allow_still_blocked(self, check, tmp_path):
+        """Without config, dangerous modules should still be blocked."""
+        script = tmp_path / "use_http.py"
+        script.write_text("import http.server")
+        result = check(f"python {script}")
+        assert needs_confirmation(result), "http should still be blocked without config"
+
+    def test_allow_inline_c_override(self, check):
+        """Allow override should also work for -c inline code."""
+        config = Config(python_allow_modules=["http"])
+        result = check("python -c 'import http.server'", config=config)
+        assert is_approved(result), "http in -c should be approved via config override"

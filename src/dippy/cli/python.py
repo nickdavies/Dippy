@@ -469,7 +469,16 @@ class SafetyAnalyzer(ast.NodeVisitor):
         self.violations: list[Violation] = []
         self.allow_print = allow_print
         self.safe_modules = SAFE_MODULES | extra_safe_modules
-        self.deny_modules = DANGEROUS_MODULES | extra_deny_modules
+        # User-configured allow explicitly overrides hardcoded dangerous list.
+        # Remove both exact matches and submodules (e.g. "http" removes "http.client").
+        deny = DANGEROUS_MODULES | extra_deny_modules
+        if extra_safe_modules:
+            deny = {
+                m
+                for m in deny
+                if m not in extra_safe_modules and m.split(".")[0] not in extra_safe_modules
+            }
+        self.deny_modules = frozenset(deny)
 
     def _add(self, node: ast.AST, kind: str, detail: str) -> None:
         self.violations.append(
@@ -824,7 +833,16 @@ def classify(ctx: HandlerContext) -> Classification:
         idx = tokens.index("-c")
         if idx + 1 >= len(tokens):
             return Classification("ask", description=desc)
-        code = tokens[idx + 1]
+        # If the -c argument contains bash expansions ($VAR, $(cmd), etc.),
+        # we can't reliably analyze it since bash modifies the code at runtime.
+        code_token_idx = idx + 1
+        if (
+            ctx.word_has_expansions
+            and code_token_idx < len(ctx.word_has_expansions)
+            and ctx.word_has_expansions[code_token_idx]
+        ):
+            return Classification("ask", description=f"{desc} (bash expansion)")
+        code = tokens[code_token_idx]
         if not code.strip():
             return Classification("ask", description=desc)
         violations = analyze_python_source(
