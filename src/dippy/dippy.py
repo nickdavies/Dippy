@@ -30,6 +30,14 @@ from dippy.core.config import (
     match_mcp,
 )
 from dippy.core.analyzer import analyze
+from dippy.core.signing import (
+    DEFAULT_ALLOWED_SIGNERS,
+    DEFAULT_IDENTITY,
+    NAMESPACE,
+    SigningError,
+    get_provider,
+    sig_path_for,
+)
 
 
 # === Mode Detection ===
@@ -174,6 +182,70 @@ def deny(reason: str = "denied by config") -> dict:
             "permissionDecisionReason": f"🐤 {reason}",
         }
     }
+
+
+# === Signature Verification ===
+
+SIGNATURE_WARNING = """\
+\033[1;33m
+╔══════════════════════════════════════════════════════════╗
+║  ⚠  Dippy: project config signature verification failed ║
+╠══════════════════════════════════════════════════════════╣
+║  {reason:<57s}║
+║                                                          ║
+║  All commands will be DENIED until this is resolved.     ║
+║  Run `dippy-sign verify` for details.                    ║
+╚══════════════════════════════════════════════════════════╝
+\033[0m"""
+
+
+def verify_project_config(config: Config) -> str | None:
+    """Verify the project config signature.
+
+    Returns None if verification passes (or is not needed),
+    or an error string if verification fails.
+    """
+    if config.project_path is None:
+        return None
+
+    sig_path = sig_path_for(config.project_path)
+
+    if not config.require_signatures and not sig_path.exists():
+        return None
+
+    if config.require_signatures and not sig_path.exists():
+        return "signature required but .dippy.sig not found"
+
+    # sig_path exists — verify it regardless of require_signatures
+    if not DEFAULT_ALLOWED_SIGNERS.exists():
+        return (
+            "cannot verify signature: allowed_signers not found "
+            f"(expected {DEFAULT_ALLOWED_SIGNERS})"
+        )
+
+    try:
+        provider = get_provider()
+    except SigningError as e:
+        return f"signing provider error: {e}"
+
+    if not provider.is_available():
+        return "ssh-keygen not available — cannot verify config signature"
+
+    try:
+        valid = provider.verify(
+            DEFAULT_ALLOWED_SIGNERS,
+            DEFAULT_IDENTITY,
+            config.project_path,
+            sig_path,
+            NAMESPACE,
+        )
+    except SigningError as e:
+        return f"signature verification error: {e}"
+
+    if not valid:
+        return "invalid signature on .dippy config"
+
+    return None
 
 
 # === Main Logic ===
@@ -334,6 +406,14 @@ def main():
         except ConfigError as e:
             logging.error(f"Config error: {e}")
             print(json.dumps(ask(f"config error: {e}")))
+            return
+
+        # Verify project config signature
+        sig_error = verify_project_config(config)
+        if sig_error:
+            logging.error(f"Signature verification failed: {sig_error}")
+            print(json.dumps(deny(sig_error)))
+            print(SIGNATURE_WARNING.format(reason=sig_error), file=sys.stderr)
             return
 
         # Detect hook event type (Claude Code only)

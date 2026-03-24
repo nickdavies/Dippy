@@ -4090,3 +4090,154 @@ class TestPostToolUse:
         handle_post_tool_use('git commit -m "fix: spaces in message"', cfg, tmp_path)
         captured = capsys.readouterr()
         assert captured.out == "🐤 Check CI\n"
+
+
+class TestSignatureVerification:
+    """Test verify_project_config in the hook."""
+
+    def test_no_project_config_passes(self):
+        from dippy.core.config import Config
+        from dippy.dippy import verify_project_config
+
+        cfg = Config(project_path=None)
+        assert verify_project_config(cfg) is None
+
+    def test_no_enforcement_no_sig_passes(self, tmp_path):
+        from dippy.core.config import Config
+        from dippy.dippy import verify_project_config
+
+        project = tmp_path / ".dippy"
+        project.write_text("allow ls\n")
+        cfg = Config(project_path=project, require_signatures=False)
+        # No .dippy.sig exists, no enforcement → pass
+        assert verify_project_config(cfg) is None
+
+    def test_require_signatures_no_sig_denies(self, tmp_path):
+        from dippy.core.config import Config
+        from dippy.dippy import verify_project_config
+
+        project = tmp_path / ".dippy"
+        project.write_text("allow ls\n")
+        cfg = Config(project_path=project, require_signatures=True)
+        error = verify_project_config(cfg)
+        assert error is not None
+        assert "not found" in error
+
+    def test_sig_exists_valid_passes(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from dippy.core.config import Config
+        from dippy.dippy import verify_project_config
+
+        project = tmp_path / ".dippy"
+        project.write_text("allow ls\n")
+        sig = tmp_path / ".dippy.sig"
+        sig.write_text("fake-sig")
+
+        allowed_signers = tmp_path / "allowed_signers"
+        allowed_signers.write_text("dippy-user ssh-ed25519 AAAA\n")
+        monkeypatch.setattr("dippy.dippy.DEFAULT_ALLOWED_SIGNERS", allowed_signers)
+
+        mock_provider = MagicMock()
+        mock_provider.is_available.return_value = True
+        mock_provider.verify.return_value = True
+        monkeypatch.setattr(
+            "dippy.dippy.get_provider", lambda: mock_provider
+        )
+
+        cfg = Config(project_path=project, require_signatures=True)
+        assert verify_project_config(cfg) is None
+        mock_provider.verify.assert_called_once()
+
+    def test_sig_exists_invalid_denies(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from dippy.core.config import Config
+        from dippy.dippy import verify_project_config
+
+        project = tmp_path / ".dippy"
+        project.write_text("allow ls\n")
+        sig = tmp_path / ".dippy.sig"
+        sig.write_text("fake-sig")
+
+        allowed_signers = tmp_path / "allowed_signers"
+        allowed_signers.write_text("dippy-user ssh-ed25519 AAAA\n")
+        monkeypatch.setattr("dippy.dippy.DEFAULT_ALLOWED_SIGNERS", allowed_signers)
+
+        mock_provider = MagicMock()
+        mock_provider.is_available.return_value = True
+        mock_provider.verify.return_value = False
+        monkeypatch.setattr("dippy.dippy.get_provider", lambda: mock_provider)
+
+        cfg = Config(project_path=project, require_signatures=False)
+        error = verify_project_config(cfg)
+        assert error is not None
+        assert "invalid signature" in error
+
+    def test_no_enforcement_sig_exists_invalid_denies(self, tmp_path, monkeypatch):
+        """Even without require_signatures, an existing invalid sig is denied."""
+        from unittest.mock import MagicMock
+
+        from dippy.core.config import Config
+        from dippy.dippy import verify_project_config
+
+        project = tmp_path / ".dippy"
+        project.write_text("allow ls\n")
+        sig = tmp_path / ".dippy.sig"
+        sig.write_text("fake-sig")
+
+        allowed_signers = tmp_path / "allowed_signers"
+        allowed_signers.write_text("dippy-user ssh-ed25519 AAAA\n")
+        monkeypatch.setattr("dippy.dippy.DEFAULT_ALLOWED_SIGNERS", allowed_signers)
+
+        mock_provider = MagicMock()
+        mock_provider.is_available.return_value = True
+        mock_provider.verify.return_value = False
+        monkeypatch.setattr("dippy.dippy.get_provider", lambda: mock_provider)
+
+        cfg = Config(project_path=project, require_signatures=False)
+        error = verify_project_config(cfg)
+        assert error is not None
+
+    def test_ssh_keygen_unavailable_denies(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from dippy.core.config import Config
+        from dippy.dippy import verify_project_config
+
+        project = tmp_path / ".dippy"
+        project.write_text("allow ls\n")
+        sig = tmp_path / ".dippy.sig"
+        sig.write_text("fake-sig")
+
+        allowed_signers = tmp_path / "allowed_signers"
+        allowed_signers.write_text("dippy-user ssh-ed25519 AAAA\n")
+        monkeypatch.setattr("dippy.dippy.DEFAULT_ALLOWED_SIGNERS", allowed_signers)
+
+        mock_provider = MagicMock()
+        mock_provider.is_available.return_value = False
+        monkeypatch.setattr("dippy.dippy.get_provider", lambda: mock_provider)
+
+        cfg = Config(project_path=project, require_signatures=True)
+        error = verify_project_config(cfg)
+        assert error is not None
+        assert "ssh-keygen not available" in error
+
+    def test_missing_allowed_signers_denies(self, tmp_path, monkeypatch):
+        from dippy.core.config import Config
+        from dippy.dippy import verify_project_config
+
+        project = tmp_path / ".dippy"
+        project.write_text("allow ls\n")
+        sig = tmp_path / ".dippy.sig"
+        sig.write_text("fake-sig")
+
+        monkeypatch.setattr(
+            "dippy.dippy.DEFAULT_ALLOWED_SIGNERS",
+            tmp_path / "nonexistent_signers",
+        )
+
+        cfg = Config(project_path=project, require_signatures=True)
+        error = verify_project_config(cfg)
+        assert error is not None
+        assert "allowed_signers not found" in error

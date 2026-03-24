@@ -1973,3 +1973,75 @@ class TestAlias:
         m = match_command(c, cfg, tmp_path)
         assert m is not None
         assert m.decision == "allow"
+
+
+class TestRequireSignatures:
+    """Test require-signatures setting."""
+
+    def test_parse_true(self):
+        cfg = parse_config("set require-signatures true")
+        assert cfg.require_signatures is True
+
+    def test_parse_false(self):
+        cfg = parse_config("set require-signatures false")
+        assert cfg.require_signatures is False
+
+    def test_parse_case_insensitive(self):
+        cfg = parse_config("set require-signatures True")
+        assert cfg.require_signatures is True
+
+    def test_invalid_value_skipped(self):
+        cfg = parse_config("set require-signatures maybe")
+        assert cfg.require_signatures is False
+
+    def test_missing_value_skipped(self):
+        cfg = parse_config("set require-signatures")
+        assert cfg.require_signatures is False
+
+    def test_underscore_variant(self):
+        cfg = parse_config("set require_signatures true")
+        assert cfg.require_signatures is True
+
+    def test_merge_overlay_true_wins(self):
+        base = Config(require_signatures=False)
+        overlay = Config(require_signatures=True)
+        merged = _merge_configs(base, overlay)
+        assert merged.require_signatures is True
+
+    def test_merge_base_true_preserved(self):
+        base = Config(require_signatures=True)
+        overlay = Config(require_signatures=False)
+        merged = _merge_configs(base, overlay)
+        assert merged.require_signatures is True
+
+    def test_merge_both_false(self):
+        base = Config(require_signatures=False)
+        overlay = Config(require_signatures=False)
+        merged = _merge_configs(base, overlay)
+        assert merged.require_signatures is False
+
+
+class TestProjectPath:
+    """Test project_path is set during load_config."""
+
+    def test_project_path_set_when_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("dippy.core.config.USER_CONFIG", tmp_path / "nonexistent")
+        monkeypatch.delenv("DIPPY_CONFIG", raising=False)
+        (tmp_path / ".dippy").write_text("allow ls\n")
+        cfg = load_config(tmp_path)
+        assert cfg.project_path == tmp_path / ".dippy"
+
+    def test_project_path_none_when_no_project(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("dippy.core.config.USER_CONFIG", tmp_path / "nonexistent")
+        monkeypatch.delenv("DIPPY_CONFIG", raising=False)
+        cfg = load_config(tmp_path)
+        assert cfg.project_path is None
+
+    def test_project_path_from_child_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("dippy.core.config.USER_CONFIG", tmp_path / "nonexistent")
+        monkeypatch.delenv("DIPPY_CONFIG", raising=False)
+        (tmp_path / ".dippy").write_text("allow ls\n")
+        child = tmp_path / "src" / "deep"
+        child.mkdir(parents=True)
+        cfg = load_config(child)
+        assert cfg.project_path == tmp_path / ".dippy"

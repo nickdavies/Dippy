@@ -38,6 +38,7 @@ dev = [
 
 [project.scripts]
 dippy = "dippy.dippy:main"
+dippy-sign = "dippy.dippy_sign:main"
 dippy-statusline = "dippy.dippy_statusline:main"
 
 [build-system]

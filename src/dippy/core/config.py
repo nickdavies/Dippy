@@ -65,6 +65,8 @@ class Config:
     default: str = "ask"  # 'allow' | 'ask'
     log: Path | None = None  # None = no logging
     log_full: bool = False  # log full command (requires log path)
+    require_signatures: bool = False
+    project_path: Path | None = None  # set when a project-level .dippy is found
 
 
 @dataclass
@@ -126,6 +128,9 @@ def _merge_configs(base: Config, overlay: Config) -> Config:
         default=overlay.default if overlay.default != "ask" else base.default,
         log=overlay.log if overlay.log is not None else base.log,
         log_full=overlay.log_full if overlay.log_full else base.log_full,
+        require_signatures=(
+            overlay.require_signatures if overlay.require_signatures else base.require_signatures
+        ),
     )
 
 
@@ -181,6 +186,7 @@ def load_config(cwd: Path) -> Config:
         project_config = _load_config_file(project_path)
         project_config = _tag_rules(project_config, str(project_path), SCOPE_PROJECT)
         config = _merge_configs(config, project_config)
+        config = replace(config, project_path=project_path)
 
     # 3. Env override (highest priority)
     env_path = os.environ.get(ENV_CONFIG)
@@ -340,6 +346,7 @@ def parse_config(text: str, source: str | None = None) -> Config:
         default=settings.get("default", "ask"),
         log=settings.get("log"),
         log_full=settings.get("log_full", False),
+        require_signatures=settings.get("require_signatures", False),
     )
 
 
@@ -417,6 +424,14 @@ def _apply_setting(settings: dict[str, bool | int | str | Path], rest: str) -> N
         if value is not None:
             raise ValueError(f"'{key}' takes no value")
         settings[key_normalized] = True
+
+    # Boolean settings (value required: true/false)
+    elif key_normalized == "require_signatures":
+        if value is None or value.lower() not in ("true", "false"):
+            raise ValueError(
+                f"'require-signatures' must be 'true' or 'false', got '{value}'"
+            )
+        settings[key_normalized] = value.lower() == "true"
 
     # Choice settings
     elif key_normalized == "default":

@@ -102,6 +102,77 @@ Dippy can do more than filter shell commands. See the [wiki](https://github.com/
 
 ---
 
+## Config Signing
+
+Dippy's project-level `.dippy` files can grant additional permissions to AI agents. An agent could modify or create `.dippy` to be more permissive. Cryptographic signing makes unauthorized writes meaningless — Dippy refuses to honor unsigned or tampered configs.
+
+### Quick Start
+
+```bash
+# One-time setup: register your SSH public key for signing
+dippy-sign init ~/.ssh/id_ed25519.pub
+
+# In your project directory, sign the .dippy config
+dippy-sign sign
+
+# Verify it worked
+dippy-sign verify
+```
+
+`dippy-sign init` does three things:
+1. Copies your public key to `~/.dippy/signing-key.pub` (so `dippy-sign sign` knows which key to use)
+2. Creates `~/.dippy/allowed_signers` (so Dippy can verify signatures)
+3. Adds `set require-signatures true` to `~/.dippy/config` (enables enforcement)
+
+### Signing with SSH Agent
+
+If you use an SSH agent, `dippy-sign sign` uses `~/.dippy/signing-key.pub` to tell `ssh-keygen` which key to request from the agent. No private key is ever stored in `~/.dippy/`.
+
+### Signing without an Agent
+
+Pass the private key directly:
+
+```bash
+dippy-sign sign --key-file ~/.ssh/id_ed25519
+```
+
+### How Verification Works
+
+When Dippy loads a project `.dippy` file:
+
+1. If `.dippy.sig` exists next to `.dippy`, Dippy verifies the signature against `~/.dippy/allowed_signers`
+2. If the signature is invalid or tampered, **all commands are denied**
+3. If `require-signatures` is enabled and no `.dippy.sig` exists, **all commands are denied**
+4. If `require-signatures` is disabled and no `.dippy.sig` exists, Dippy works as normal
+
+### Recommended: Deny Rules for Config Files
+
+Prevent the AI from modifying signing-related files. Add to `~/.claude/settings.json`:
+
+```json
+{
+  "deny": [
+    "Edit ~/.dippy/**",
+    "Write ~/.dippy/**",
+    "Edit **/.dippy",
+    "Write **/.dippy",
+    "Edit **/.dippy.sig",
+    "Write **/.dippy.sig"
+  ]
+}
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `dippy-sign init <key.pub>` | Set up signing with a public key |
+| `dippy-sign sign` | Sign `.dippy` in current directory |
+| `dippy-sign verify` | Verify `.dippy` signature |
+| `dippy-sign status` | Show signing configuration and status |
+
+---
+
 ## Uninstall
 
 Remove the hook entry from `~/.claude/settings.json`, then:
