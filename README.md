@@ -128,6 +128,51 @@ import is accepted.
 
 Dippy can do more than filter shell commands. See the [wiki](https://github.com/ldayton/Dippy/wiki) for additional capabilities.
 
+### External CLI handlers
+
+Python packages installed in the same environment as Dippy can add command
+handlers through the `dippy.handlers` entry point group:
+
+```toml
+[project]
+name = "dippy-mytools"
+dependencies = ["dippy>=0.2.7"]
+
+[project.entry-points."dippy.handlers"]
+mytools = "dippy_mytools.handler"
+```
+
+The entry point target may be a module, as above, or an object such as
+`dippy_mytools.handlers:MYTOOLS_HANDLER`. The resolved module or object must
+provide this interface:
+
+```python
+from dippy.cli import Classification, HandlerContext
+
+COMMANDS = ["mytools"]
+
+
+def classify(ctx: HandlerContext) -> Classification:
+    if len(ctx.tokens) > 1 and ctx.tokens[1] in {"get", "list", "status"}:
+        return Classification("allow", description=" ".join(ctx.tokens[:2]))
+    return Classification("ask", description="mytools")
+```
+
+`COMMANDS` must be a non-empty list or tuple of non-empty strings, and
+`classify` must be callable. A handler receives the current `tokens`, `config`,
+and `word_has_expansions` through `HandlerContext`. Dippy loads each entry point
+once per process, skips plugins that fail to load or do not satisfy this
+contract, and defaults to asking when a plugin fails or returns malformed data
+at runtime. An external plugin cannot replace a built-in handler. If multiple
+plugins claim the same command, the first entry point returned by Python's
+package metadata wins; that order is not guaranteed, so packages must not rely
+on it.
+
+> **Security:** Handler plugins are trusted code. Installing one executes
+> arbitrary Python in Dippy's process, and a plugin can approve commands.
+> Built-in precedence only prevents command-name replacement; it is not a
+> sandbox or a security boundary between Dippy and installed plugins.
+
 ---
 
 ## Uninstall
