@@ -38,6 +38,59 @@ Cursor Hooks were introduced in **version 1.7** (October 2025) as a mechanism to
 - [Cursor 1.7 Changelog](https://cursor.com/changelog/1-7)
 - [InfoQ: Cursor 1.7 Adds Hooks](https://www.infoq.com/news/2025/10/cursor-hooks/)
 
+### Dippy compatibility
+
+Dippy supports two Cursor shell-hook payload shapes:
+
+- `preToolUse` with `tool_name: "Shell"` and the command in
+  `tool_input.command`
+- `beforeShellExecution` with the command in the top-level `command` field
+
+For `preToolUse`, Dippy emits a Cursor `permission` response only for the
+`Shell` tool. Other tools, malformed `tool_input`, and payloads without a string
+command receive `{}` rather than a Dippy permission decision. Configure a `Shell`
+matcher even though Dippy also checks the tool name itself. Use this integration
+only when `allow`/`deny` decisions are sufficient:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      { "matcher": "Shell", "command": "dippy" }
+    ]
+  }
+}
+```
+
+Current Cursor enforces `allow` and `deny` from `preToolUse`, but accepts `ask`
+without enforcing a confirmation prompt. An `ask` therefore provides no prompt
+guarantee, just as Dippy's `{}` passthrough makes no permission decision. Do not
+use `preToolUse` when an `ask` classification must stop for confirmation.
+
+Use `beforeShellExecution` for prompt-reliant policies:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      { "command": "dippy" }
+    ]
+  }
+}
+```
+
+Current Cursor enforces Dippy's `deny` response for this hook, while Dippy
+`allow` and `ask` responses remain subject to Cursor's approval flow. This keeps
+Cursor prompting available but does not reliably remove prompts for safe
+commands.
+
+The Dippy test suite proves exact event dispatch, schema validation, and emitted
+JSON. The enforcement statements above are observed current-Cursor behavior;
+they may change with Cursor releases, permission modes, or sandbox settings and
+should be verified in the deployed configuration.
+
 ---
 
 ## Configuration
@@ -101,6 +154,7 @@ Enable IntelliSense in Cursor settings:
 
 | Hook                   | Trigger                         | Can Block? | Can Message Agent?   |
 | ---------------------- | ------------------------------- | ---------- | -------------------- |
+| `preToolUse`           | Before a matched tool runs      | Yes        | Yes                  |
 | `beforeSubmitPrompt`   | Before prompt sent to LLM       | Yes        | No (beta limitation) |
 | `beforeShellExecution` | Before shell command runs       | Yes        | Yes                  |
 | `afterShellExecution`  | After shell command completes   | No         | No                   |
@@ -138,6 +192,32 @@ Enable IntelliSense in Cursor settings:
   "user_email": "user@example.com"
 }
 ```
+
+### preToolUse (`Shell`)
+
+**Input:**
+```json
+{
+  "hook_event_name": "preToolUse",
+  "tool_name": "Shell",
+  "tool_input": {
+    "command": "git status",
+    "cwd": "/path/to/project"
+  }
+}
+```
+
+**Output:**
+```json
+{
+  "permission": "allow",
+  "user_message": "Displayed in UI",
+  "agent_message": "Sent to agent context"
+}
+```
+
+See [Dippy compatibility](#dippy-compatibility) for the current limitation of
+`permission: "ask"`.
 
 ### beforeShellExecution
 
@@ -311,19 +391,19 @@ Status values: `"completed"`, `"aborted"`, `"error"`
 
 ### Permission Values
 
-| Value   | Behavior                             |
-| ------- | ------------------------------------ |
-| `allow` | Execute without user intervention    |
-| `deny`  | Block execution, show `user_message` |
-| `ask`   | Prompt user for confirmation         |
+| Value   | Current shell-hook behavior |
+| ------- | --------------------------- |
+| `allow` | Enforced by `preToolUse`; does not reliably bypass the approval flow for `beforeShellExecution` |
+| `deny`  | Blocks execution for both shell hooks |
+| `ask`   | Accepted but not enforced as a prompt by `preToolUse`; remains subject to Cursor's approval flow for `beforeShellExecution` |
 
 ### Response Fields
 
 | Field              | Description                 | Supported Hooks                          |
 | ------------------ | --------------------------- | ---------------------------------------- |
-| `permission`       | allow/deny/ask              | beforeShellExecution, beforeMCPExecution |
-| `user_message`     | Displayed in Cursor UI      | beforeShellExecution, beforeMCPExecution |
-| `agent_message`    | Injected into agent context | beforeShellExecution, beforeMCPExecution |
+| `permission`       | allow/deny/ask              | preToolUse, beforeShellExecution, beforeMCPExecution |
+| `user_message`     | Displayed in Cursor UI      | preToolUse, beforeShellExecution, beforeMCPExecution |
+| `agent_message`    | Injected into agent context | preToolUse, beforeShellExecution, beforeMCPExecution |
 | `continue`         | Boolean to proceed          | beforeSubmitPrompt                       |
 | `followup_message` | Auto-submitted message      | stop                                     |
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,9 +22,10 @@ def get_decision(output: dict) -> str | None:
 
 
 def run_hook(
-    input_data: dict | str | None = None,
+    input_data: object | None = None,
     via_symlink: bool = False,
     use_system_python: bool = False,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run dippy-hook with given input, optionally via a symlink."""
     if via_symlink:
@@ -31,20 +33,23 @@ def run_hook(
         with tempfile.TemporaryDirectory() as tmpdir:
             symlink_path = Path(tmpdir) / "dippy"
             symlink_path.symlink_to(DIPPY_HOOK)
-            return _run(symlink_path, input_data, use_system_python)
-    return _run(DIPPY_HOOK, input_data, use_system_python)
+            return _run(symlink_path, input_data, use_system_python, env)
+    return _run(DIPPY_HOOK, input_data, use_system_python, env)
 
 
 def _run(
-    script: Path, input_data: dict | str | None, use_system_python: bool = False
+    script: Path,
+    input_data: object | None,
+    use_system_python: bool = False,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Execute the script with input."""
     if input_data is None:
         stdin_bytes = b""
-    elif isinstance(input_data, dict):
-        stdin_bytes = json.dumps(input_data).encode()
-    else:
+    elif isinstance(input_data, str):
         stdin_bytes = input_data.encode()
+    else:
+        stdin_bytes = json.dumps(input_data).encode()
 
     python = SYSTEM_PYTHON if use_system_python else sys.executable
     return subprocess.run(
@@ -52,6 +57,7 @@ def _run(
         input=stdin_bytes,
         capture_output=True,
         timeout=10,
+        env=env,
     )
 
 
@@ -129,19 +135,205 @@ class TestEndToEnd:
         assert output == {}
 
 
+class TestCursorPreToolUse:
+    """End-to-end tests for Cursor's preToolUse payload."""
+
+    def test_safe_shell_command_is_allowed(self, cursor_pretooluse_input, tmp_path):
+        input_data = cursor_pretooluse_input("git status")
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output["permission"] == "allow"
+
+    def test_unknown_shell_command_asks(self, cursor_pretooluse_input, tmp_path):
+        input_data = cursor_pretooluse_input("rm -rf /")
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output["permission"] == "ask"
+
+    def test_configured_shell_command_is_denied(
+        self, cursor_pretooluse_input, tmp_path
+    ):
+        config = tmp_path / "config"
+        config.write_text('deny rm -rf /* "never remove the root filesystem"\n')
+        input_data = cursor_pretooluse_input("rm -rf /")
+
+        output = self._run_isolated(input_data, tmp_path, config=config)
+
+        assert output["permission"] == "deny"
+        assert "never remove the root filesystem" in output["agent_message"]
+
+    def test_malformed_tool_input_passes_through(
+        self, cursor_pretooluse_input, tmp_path
+    ):
+        input_data = cursor_pretooluse_input(tool_input=["not", "an", "object"])
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    def test_missing_command_passes_through(self, cursor_pretooluse_input, tmp_path):
+        input_data = cursor_pretooluse_input(tool_input={"cwd": ""})
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    def test_missing_tool_name_passes_through(self, cursor_pretooluse_input, tmp_path):
+        input_data = cursor_pretooluse_input()
+        del input_data["tool_name"]
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    def test_top_level_command_does_not_satisfy_pretooluse(
+        self, cursor_pretooluse_input, tmp_path
+    ):
+        input_data = cursor_pretooluse_input()
+        del input_data["tool_name"]
+        del input_data["tool_input"]
+        input_data["command"] = "git status"
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    def test_non_shell_tool_passes_through(self, cursor_pretooluse_input, tmp_path):
+        input_data = cursor_pretooluse_input(
+            tool_name="Read", tool_input={"path": "/etc/passwd"}
+        )
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    def test_explicit_before_shell_execution_is_allowed(self, tmp_path):
+        input_data = {
+            "hook_event_name": "beforeShellExecution",
+            "cursor_version": "test-version",
+            "command": "git status",
+            "cwd": str(tmp_path),
+        }
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output["permission"] == "allow"
+
+    def test_before_shell_execution_requires_top_level_command(
+        self, cursor_pretooluse_input, tmp_path
+    ):
+        input_data = cursor_pretooluse_input()
+        input_data["hook_event_name"] = "beforeShellExecution"
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    def test_unsupported_command_event_passes_through(self, tmp_path):
+        input_data = {
+            "hook_event_name": "afterShellExecution",
+            "cursor_version": "test-version",
+            "command": "git status",
+            "cwd": str(tmp_path),
+        }
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    def test_unsupported_tool_event_passes_through(
+        self, cursor_pretooluse_input, tmp_path
+    ):
+        input_data = cursor_pretooluse_input()
+        input_data["hook_event_name"] = "postToolUse"
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    def test_unsupported_tool_event_without_cursor_version_passes_through(
+        self, cursor_pretooluse_input, tmp_path
+    ):
+        input_data = cursor_pretooluse_input()
+        input_data["hook_event_name"] = "postToolUse"
+        del input_data["cursor_version"]
+
+        output = self._run_isolated(input_data, tmp_path)
+
+        assert output == {}
+
+    @staticmethod
+    def _run_isolated(input_data, home: Path, config: Path | None = None) -> dict:
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        if config is not None:
+            env["DIPPY_CONFIG"] = str(config)
+        else:
+            env.pop("DIPPY_CONFIG", None)
+        result = run_hook(input_data, env=env)
+        assert result.returncode == 0, result.stderr.decode()
+        return json.loads(result.stdout)
+
+
+class TestModeRegression:
+    """Ensure existing hook payloads retain their response formats."""
+
+    def test_claude_bash(self, tmp_path):
+        input_data = {"tool_name": "Bash", "tool_input": {"command": "git status"}}
+
+        output = TestCursorPreToolUse._run_isolated(input_data, tmp_path)
+
+        assert get_decision(output) == "allow"
+
+    def test_gemini_shell(self, tmp_path):
+        input_data = {
+            "tool_name": "run_shell_command",
+            "tool_input": {"command": "git status"},
+        }
+
+        output = TestCursorPreToolUse._run_isolated(input_data, tmp_path)
+
+        assert output["decision"] == "allow"
+
+    def test_cursor_before_shell_execution(self, tmp_path):
+        """Legacy event-less beforeShellExecution payload remains supported."""
+        input_data = {"command": "git status", "cwd": str(tmp_path)}
+
+        output = TestCursorPreToolUse._run_isolated(input_data, tmp_path)
+
+        assert output["permission"] == "allow"
+
+    def test_cursor_eventless_shell_tool(self, cursor_pretooluse_input, tmp_path):
+        """Legacy event-less Shell payload remains supported."""
+        input_data = cursor_pretooluse_input()
+        del input_data["hook_event_name"]
+
+        output = TestCursorPreToolUse._run_isolated(input_data, tmp_path)
+
+        assert output["permission"] == "allow"
+
+
 class TestErrorHandling:
     """Test graceful handling of bad input."""
 
     def test_invalid_json(self):
         """Malformed JSON should not crash."""
         result = run_hook("not valid json {{{")
-        # Should not crash - may return error or ask
         assert result.returncode == 0
+        assert json.loads(result.stdout) == {}
 
     def test_empty_stdin(self):
         """Empty stdin should not crash."""
         result = run_hook(None)
         assert result.returncode == 0
+
+    def test_non_object_json(self):
+        """A valid JSON value that is not an object should pass through."""
+        result = run_hook(["not", "an", "object"])
+        assert result.returncode == 0
+        assert json.loads(result.stdout) == {}
 
     def test_missing_tool_name(self):
         """Missing tool_name field should not crash."""

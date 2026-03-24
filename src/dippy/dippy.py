@@ -52,8 +52,27 @@ def _detect_mode_from_flags() -> str | None:
 
 def _detect_mode_from_input(input_data: dict) -> str:
     """Auto-detect mode from input JSON structure."""
-    # Cursor: {"command": "...", "cwd": "..."}
-    if "command" in input_data and "tool_name" not in input_data:
+    hook_event = input_data.get("hook_event_name")
+
+    # Current Cursor hooks have distinct lower-camel-case event names.
+    if hook_event in ("preToolUse", "beforeShellExecution"):
+        return "cursor"
+
+    # Cursor event names are lower camel case. Recognize unsupported events as
+    # Cursor before falling back to Claude/Gemini routing; Claude event names
+    # are PascalCase (for example, PreToolUse and PostToolUse).
+    if isinstance(hook_event, str) and hook_event[:1].islower():
+        return "cursor"
+
+    # Cursor metadata identifies unsupported named events so they can pass
+    # through instead of being interpreted as another assistant's hook.
+    if "cursor_version" in input_data:
+        return "cursor"
+
+    # Legacy beforeShellExecution payloads had no event name.
+    if hook_event is None and "command" in input_data and "tool_name" not in input_data:
+        return "cursor"
+    if hook_event is None and input_data.get("tool_name") == "Shell":
         return "cursor"
 
     # Claude/Gemini: {"tool_name": "...", "tool_input": {...}}
@@ -258,12 +277,51 @@ def handle_mcp_post_tool_use(tool_name: str, config: Config) -> None:
     # empty string or None = silent (no output)
 
 
+def _extract_cursor_command(input_data: dict) -> str | None:
+    """Validate a Cursor hook payload and return its shell command."""
+    hook_event = input_data.get("hook_event_name")
+
+    if hook_event == "preToolUse":
+        if input_data.get("tool_name") != "Shell":
+            return None
+        tool_input = input_data.get("tool_input")
+        if not isinstance(tool_input, dict):
+            return None
+        command = tool_input.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+        return command
+
+    if hook_event == "beforeShellExecution":
+        command = input_data.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+        return command
+
+    if hook_event is not None:
+        return None
+
+    # Shape-based compatibility is limited to payloads without an event name.
+    if "tool_name" in input_data:
+        if input_data.get("tool_name") != "Shell":
+            return None
+        tool_input = input_data.get("tool_input")
+        if not isinstance(tool_input, dict):
+            return None
+        command = tool_input.get("command")
+    else:
+        command = input_data.get("command")
+
+    return command if isinstance(command, str) else None
+
+
 # === Hook Entry Point ===
 
 # Tool names that indicate shell/bash commands
 SHELL_TOOL_NAMES = frozenset(
     {
         "Bash",  # Claude Code
+        "Shell",  # Cursor preToolUse
         "shell",  # Gemini CLI
         "run_shell",  # Gemini CLI alternate
         "run_shell_command",  # Gemini CLI official name
@@ -323,6 +381,10 @@ def main():
     try:
         # Read hook input from stdin
         input_data = json.load(sys.stdin)
+        if not isinstance(input_data, dict):
+            logging.error("Hook input must be a JSON object")
+            print(json.dumps({}))
+            return
 
         # Auto-detect mode from input if no explicit flag/env was set
         if _EXPLICIT_MODE is None:
@@ -334,11 +396,23 @@ def main():
         if _EXPLICIT_MODE is None:
             logging.info(f"Auto-detected mode: {MODE}")
 
-        # Extract cwd from input
-        # Cursor: top-level "cwd"
-        # Claude Code: may be in tool_input or top-level
+        cursor_command = None
+        if MODE == "cursor":
+            cursor_command = _extract_cursor_command(input_data)
+            if cursor_command is None:
+                print(json.dumps({}))
+                return
+
+        # Extract cwd according to the selected payload schema.
         cwd_str = input_data.get("cwd")
-        if not cwd_str:
+        if MODE == "cursor":
+            hook_event = input_data.get("hook_event_name")
+            uses_tool_input = hook_event == "preToolUse" or (
+                hook_event is None and input_data.get("tool_name") == "Shell"
+            )
+            if not cwd_str and uses_tool_input:
+                cwd_str = input_data["tool_input"].get("cwd")
+        elif not cwd_str:
             tool_input = input_data.get("tool_input", {})
             cwd_str = tool_input.get("cwd")
         if cwd_str:
@@ -355,16 +429,15 @@ def main():
             print(json.dumps(ask(f"config error: {e}")))
             return
 
-        # Detect hook event type (Claude Code only)
+        # Detect hook event type for post-use and bypass handling.
         hook_event = input_data.get("hook_event_name", "PreToolUse")
 
         # Extract command based on mode
-        # Cursor: {"command": "...", "cwd": "..."}
+        # Cursor beforeShellExecution: {"command": "...", "cwd": "..."}
+        # Cursor preToolUse: {"tool_name": "Shell", "tool_input": {"command": "..."}}
         # Claude/Gemini: {"tool_name": "...", "tool_input": {"command": "..."}}
         if MODE == "cursor":
-            # Cursor sends command directly (beforeShellExecution hook)
-            command = input_data.get("command", "")
-            tool_name = None
+            command = cursor_command
         else:
             # Claude Code and Gemini CLI use tool_name/tool_input format
             tool_name = input_data.get("tool_name", "")

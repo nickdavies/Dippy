@@ -9,7 +9,9 @@
 
 > **Stop the permission fatigue.** Claude Code asks for approval on every `ls`, `git status`, and `cat` - destroying your flow state. You check Slack, come back, and your assistant's just sitting there waiting.
 
-Dippy is a shell command hook that auto-approves safe commands while still prompting for anything destructive. When it blocks, your custom deny messages can steer Claude back on track—no wasted turns. Get up to **40% faster development** without disabling permissions entirely.
+Dippy is a shell command hook that auto-approves safe commands while still prompting for anything destructive. When it blocks, your custom deny messages can steer the AI back on track—no wasted turns. Get up to **40% faster development** without disabling permissions entirely.
+
+Works with **Claude Code**, **Cursor**, and **Gemini CLI**.
 
 Built on [Parable](https://github.com/ldayton/Parable), our own hand-written bash parser—no external dependencies, just pure Python. 14,000+ tests between the two.
 
@@ -61,6 +63,8 @@ git clone https://github.com/ldayton/Dippy.git
 
 ### Configure
 
+#### Claude Code
+
 Add to `~/.claude/settings.json` (or use `/hooks` interactively):
 
 ```json
@@ -75,6 +79,62 @@ Add to `~/.claude/settings.json` (or use `/hooks` interactively):
   }
 }
 ```
+
+#### Cursor
+
+Cursor currently gives its two shell hook types different permission behavior.
+Choose the hook based on whether your policy depends on an approval prompt.
+
+Use `preToolUse` when Dippy's `allow`/`deny` decisions are sufficient:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      { "matcher": "Shell", "command": "dippy" }
+    ]
+  }
+}
+```
+
+The `Shell` matcher limits Dippy to shell invocations. Dippy reads the command
+from `tool_input.command`; a non-shell tool, malformed `tool_input`, or missing
+command produces an empty JSON response rather than a Dippy permission decision.
+
+Current Cursor accepts `permission: "ask"` from `preToolUse` but does not enforce
+it by displaying a confirmation prompt. It behaves as no enforced Dippy decision,
+like Dippy's `{}` passthrough response. Do **not** use `preToolUse` where commands
+classified as `ask` must prompt before execution.
+
+Use `beforeShellExecution` when retaining Cursor's approval prompt is required:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      { "command": "dippy" }
+    ]
+  }
+}
+```
+
+Dippy reads this hook's top-level `command`. Current Cursor enforces Dippy's
+`deny`, but a Dippy `allow` does not skip Cursor's own approval flow; `allow` and
+`ask` can therefore still result in Cursor prompting. This preserves prompting
+for commands that require it, at the cost of not reliably auto-approving safe
+commands.
+
+Dippy auto-detects both Cursor payloads. You can instead force the mode with
+`dippy --cursor` or `DIPPY_CURSOR=1`. Cursor responses use `permission` with an
+`allow`, `ask`, or `deny` value, and logs go to
+`~/.cursor/hook-approvals.log`.
+
+These are observed current-Cursor limits, not guarantees of the hook protocol.
+Permission and sandbox settings may also affect execution. Dippy's tests verify
+payload parsing and emitted JSON; verify end-to-end behavior with the Cursor
+version and settings you deploy.
 
 If you installed manually, use the full path instead: `/path/to/Dippy/bin/dippy-hook`
 
@@ -177,7 +237,7 @@ on it.
 
 ## Uninstall
 
-Remove the hook entry from `~/.claude/settings.json`, then:
+Remove the hook entry from `~/.claude/settings.json` or `~/.cursor/hooks.json`, then:
 
 ```bash
 brew uninstall dippy  # if installed via Homebrew

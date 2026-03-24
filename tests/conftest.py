@@ -23,6 +23,31 @@ def hook_input():
 
 
 @pytest.fixture
+def cursor_pretooluse_input():
+    """Factory for Cursor preToolUse payloads."""
+
+    def _make(
+        command: str = "git status",
+        *,
+        tool_name: str = "Shell",
+        tool_input: object | None = None,
+    ) -> dict:
+        if tool_input is None:
+            tool_input = {"command": command, "cwd": ""}
+        return {
+            "conversation_id": "test-conversation",
+            "generation_id": "test-generation",
+            "hook_event_name": "preToolUse",
+            "cursor_version": "test-version",
+            "workspace_roots": [],
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+        }
+
+    return _make
+
+
+@pytest.fixture
 def check():
     """Return a check_command wrapper with default config and cwd."""
     from dippy.dippy import check_command

@@ -10,7 +10,7 @@ A comprehensive comparison of hook/extensibility features across Claude Code, Cu
 
 | Event Type                    | Claude Code          | Cursor                                                     | Gemini CLI                      | Codex CLI          |
 | ----------------------------- | -------------------- | ---------------------------------------------------------- | ------------------------------- | ------------------ |
-| **Pre-tool execution**        | ✅ PreToolUse         | ✅ beforeShellExecution, beforeMCPExecution, beforeReadFile | ✅ BeforeTool                    | ❌                  |
+| **Pre-tool execution**        | ✅ PreToolUse         | ✅ preToolUse, beforeShellExecution, beforeMCPExecution, beforeReadFile | ✅ BeforeTool                    | ❌                  |
 | **Post-tool execution**       | ✅ PostToolUse        | ✅ afterShellExecution, afterMCPExecution, afterFileEdit    | ✅ AfterTool                     | ❌                  |
 | **Tool failure**              | ✅ PostToolUseFailure | ❌                                                          | ❌                               | ❌                  |
 | **Permission request**        | ✅ PermissionRequest  | ❌ (use beforeShell)                                        | ✅ Notification (ToolPermission) | ❌                  |
@@ -38,7 +38,7 @@ A comprehensive comparison of hook/extensibility features across Claude Code, Cu
 | ---------------------------- | -------------------------------------- | ------------------- | --------------------- | --------- |
 | **Block operations**         | ✅ Exit 2 or JSON deny                  | ✅ permission: deny  | ✅ Exit 2 or JSON deny | ❌         |
 | **Allow operations**         | ✅ permissionDecision: allow            | ✅ permission: allow | ✅ decision: allow     | ❌         |
-| **Prompt user**              | ✅ permissionDecision: ask              | ✅ permission: ask   | ✅ decision: ask       | ❌         |
+| **Prompt user**              | ✅ permissionDecision: ask              | ⚠️ `preToolUse` ask is not enforced | ✅ decision: ask       | ❌         |
 | **Modify tool input**        | ✅ updatedInput                         | ❌                   | ✅ (via deny + reason) | ❌         |
 | **Inject context to agent**  | ✅ additionalContext (UserPromptSubmit) | ✅ agent_message     | ✅ additionalContext   | ❌         |
 | **Message to user only**     | ✅ systemMessage                        | ✅ user_message      | ✅ systemMessage       | ❌         |
@@ -84,7 +84,7 @@ A comprehensive comparison of hook/extensibility features across Claude Code, Cu
 | `session_id`      | ✅                    | ✅ conversation_id     | ✅               | ❌         |
 | `hook_event_name` | ✅                    | ✅                     | ✅               | ❌         |
 | `cwd`             | ✅                    | ✅ (may be empty)      | ✅               | ❌         |
-| `tool_name`       | ✅                    | ✅ (in specific hooks) | ✅               | ❌         |
+| `tool_name`       | ✅                    | ✅ (`preToolUse` and specific hooks) | ✅               | ❌         |
 | `tool_input`      | ✅                    | ✅                     | ✅               | ❌         |
 | `tool_result`     | ✅ (PostToolUse)      | ✅ result_json         | ✅ tool_response | ❌         |
 | `transcript_path` | ✅                    | ❌                     | ✅               | ❌         |
@@ -111,7 +111,7 @@ A comprehensive comparison of hook/extensibility features across Claude Code, Cu
 
 | Tool Type          | Claude Code             | Cursor                     | Gemini CLI                     | Codex CLI               |
 | ------------------ | ----------------------- | -------------------------- | ------------------------------ | ----------------------- |
-| **Shell**          | `Bash`                  | N/A (beforeShellExecution) | `run_shell_command`            | shell_tool              |
+| **Shell**          | `Bash`                  | `Shell` (`preToolUse`)      | `run_shell_command`            | shell_tool              |
 | **Read file**      | `Read`                  | N/A (beforeReadFile)       | `read_file`, `read_many_files` | Built-in                |
 | **Write file**     | `Write`                 | N/A (afterFileEdit)        | `write_file`                   | Built-in                |
 | **Edit file**      | `Edit`, `MultiEdit`     | N/A (afterFileEdit)        | `replace`                      | apply_patch             |

@@ -104,10 +104,11 @@ def test_gemini_env_var(monkeypatch):
 
 
 def test_shell_tool_names():
-    """Test that shell tool names include Claude and Gemini variants."""
+    """Test that shell tool names include supported assistant variants."""
     from dippy.dippy import SHELL_TOOL_NAMES
 
     assert "Bash" in SHELL_TOOL_NAMES  # Claude
+    assert "Shell" in SHELL_TOOL_NAMES  # Cursor
     assert "shell" in SHELL_TOOL_NAMES  # Gemini
     assert "run_shell_command" in SHELL_TOOL_NAMES  # Gemini official
 
@@ -245,8 +246,56 @@ def test_auto_detect_cursor_from_input():
     """Test auto-detection of Cursor mode from input structure."""
     from dippy.dippy import _detect_mode_from_input
 
-    # Cursor sends command directly without tool_name
+    # Cursor beforeShellExecution sends command directly without tool_name
     input_data = {"command": "ls", "cwd": "/home/user"}
+    assert _detect_mode_from_input(input_data) == "cursor"
+
+
+def test_auto_detect_cursor_pretooluse_from_input(cursor_pretooluse_input):
+    """Test auto-detection of Cursor mode from preToolUse input structure."""
+    from dippy.dippy import _detect_mode_from_input
+
+    assert _detect_mode_from_input(cursor_pretooluse_input()) == "cursor"
+
+
+def test_auto_detect_cursor_pretooluse_non_shell(cursor_pretooluse_input):
+    """Non-shell Cursor payloads must still use Cursor passthrough semantics."""
+    from dippy.dippy import _detect_mode_from_input
+
+    input_data = cursor_pretooluse_input(
+        tool_name="Read", tool_input={"path": "/some/file"}
+    )
+    assert _detect_mode_from_input(input_data) == "cursor"
+
+
+def test_auto_detect_explicit_cursor_before_shell_execution():
+    """The named beforeShellExecution event selects Cursor mode."""
+    from dippy.dippy import _detect_mode_from_input
+
+    input_data = {
+        "hook_event_name": "beforeShellExecution",
+        "command": "git status",
+    }
+    assert _detect_mode_from_input(input_data) == "cursor"
+
+
+def test_named_event_disables_legacy_shape_detection():
+    """Only event-less payloads use the legacy top-level command shape."""
+    from dippy.dippy import _detect_mode_from_input
+
+    input_data = {"hook_event_name": "PostToolUse", "command": "git status"}
+    assert _detect_mode_from_input(input_data) == "claude"
+
+
+def test_unsupported_cursor_event_without_version_uses_cursor_passthrough():
+    """Lower-camel Cursor events must not fall through to Claude routing."""
+    from dippy.dippy import _detect_mode_from_input
+
+    input_data = {
+        "hook_event_name": "postToolUse",
+        "tool_name": "Shell",
+        "tool_input": {"command": "git status"},
+    }
     assert _detect_mode_from_input(input_data) == "cursor"
 
 
