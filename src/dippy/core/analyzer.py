@@ -243,6 +243,8 @@ def _analyze_command(
         and getattr(getattr(word, "parts", [None])[0], "kind", None)
         in _OPAQUE_PART_KINDS
     )
+    # Track which words contain bash expansions (param, cmdsub, procsub)
+    word_has_expansions = tuple(bool(getattr(w, "parts", [])) for w in node.words)
     # Skip env var assignments to find base command
     base_idx = 0
     while (
@@ -304,7 +306,9 @@ def _analyze_command(
                     )
                     outer_result = handler.classify(
                         HandlerContext(
-                            words[base_idx:], opaque_positions=adjusted_opaque
+                            words[base_idx:],
+                            opaque_positions=adjusted_opaque,
+                            config=config,
                         )
                     )
                     if outer_result.action != "allow":
@@ -339,7 +343,12 @@ def _analyze_command(
         return _combine(decisions)
 
     cmd_decision = _analyze_simple_command(
-        words, config, cwd, remote=remote, opaque_positions=opaque_positions
+        words,
+        config,
+        cwd,
+        remote=remote,
+        opaque_positions=opaque_positions,
+        word_has_expansions=word_has_expansions,
     )
     decisions.append(cmd_decision)
 
@@ -409,6 +418,7 @@ def _analyze_simple_command(
     *,
     remote: bool = False,
     opaque_positions: frozenset[int] = frozenset(),
+    word_has_expansions: tuple[bool, ...] = (),
 ) -> Decision:
     """Analyze a simple command (list of words)."""
     if not words:
@@ -479,7 +489,12 @@ def _analyze_simple_command(
     handler = get_handler(base)
     if handler:
         result = handler.classify(
-            HandlerContext(tokens, opaque_positions=adjusted_opaque)
+            HandlerContext(
+                tokens,
+                opaque_positions=adjusted_opaque,
+                config=config,
+                word_has_expansions=word_has_expansions,
+            )
         )
         desc = result.description or get_description(tokens, base)
         # Check handler-provided redirect targets against config (skip in remote mode)
