@@ -1578,3 +1578,265 @@ class TestPythonInlineExpansions:
         """A safe -c body still auto-approves behind a wrapper command."""
         decision, reason = check_single("timeout 5 python -c 'print(1)'")
         assert decision == "approve"
+
+
+class TestPythonAllowedSymbols:
+    """Tests for restricted imports configured with python-allow-symbol."""
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from sys import stdin",
+            "from sys import stdin as input_stream",
+            "from sys import stdin, stdout",
+        ],
+    )
+    def test_exact_from_import_is_allowed(self, source):
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            source,
+            allowed_symbols={"sys": frozenset({"stdin", "stdout"})},
+        )
+
+        assert violations == []
+
+    @pytest.mark.parametrize(
+        ("source", "detail"),
+        [
+            ("import sys", "dangerous module: sys"),
+            ("from sys import exit", "disallowed import from sys: exit"),
+            ("from sys import *", "wildcard import from sys"),
+            ("from .sys import stdin", "relative import not allowed"),
+            ("from os import sep", "dangerous module: os"),
+            ("from sys import stdin\nstdin.read()", "dangerous method: read"),
+        ],
+    )
+    def test_non_exact_imports_fail_closed(self, source, detail):
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            source,
+            allowed_symbols={"sys": frozenset({"stdin"})},
+        )
+
+        assert any(detail in violation.detail for violation in violations)
+
+    def test_allow_module_remains_module_wide(self):
+        from dippy.cli.python import analyze_python_source
+
+        violations = analyze_python_source(
+            "import sys",
+            extra_safe_modules=frozenset({"sys"}),
+            allowed_symbols={"sys": frozenset({"stdin"})},
+        )
+
+        assert violations == []
+
+    def test_script_uses_configured_symbol(self, check, tmp_path):
+        script = tmp_path / "stdin_json.py"
+        script.write_text(
+            "from sys import stdin\nimport json\nprint(json.load(stdin))\n"
+        )
+
+        result = check(
+            f"python {script}",
+            config=Config(python_allow_symbols=["sys.stdin"]),
+        )
+
+        assert is_approved(result)
+
+    def test_inline_code_uses_configured_symbol(self, check):
+        result = check(
+            "python -c 'from sys import stdin; import json; print(json.load(stdin))'",
+            config=Config(python_allow_symbols=["sys.stdin"]),
+        )
+
+        assert is_approved(result)
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "import sys; print(sys.stdin)",
+            "from sys import exit; exit()",
+            "from sys import *",
+        ],
+    )
+    def test_inline_code_rejects_broader_access(self, check, source):
+        result = check(
+            f'python -c "{source}"',
+            config=Config(python_allow_symbols=["sys.stdin"]),
+        )
+
+        assert needs_confirmation(result)
+
+
+class TestPythonAllowedSymbolInteractions:
+    """Interaction matrix for symbol, module, deny, and AST restrictions."""
+
+    @staticmethod
+    def analyze(
+        source,
+        *,
+        allowed_symbols=None,
+        allow_modules=frozenset(),
+        deny_modules=frozenset(),
+    ):
+        from dippy.cli.python import analyze_python_source
+
+        return analyze_python_source(
+            source,
+            extra_safe_modules=allow_modules,
+            extra_deny_modules=deny_modules,
+            allowed_symbols=allowed_symbols,
+        )
+
+    def test_explicit_deny_takes_precedence_over_symbol(self):
+        violations = self.analyze(
+            "from sys import stdin",
+            allowed_symbols={"sys": frozenset({"stdin"})},
+            deny_modules=frozenset({"sys"}),
+        )
+
+        assert [(violation.kind, violation.detail) for violation in violations] == [
+            ("import", "dangerous module: sys")
+        ]
+
+    @pytest.mark.parametrize("deny_in_overlay", [False, True])
+    def test_merged_explicit_deny_takes_precedence_over_symbol(
+        self, check, deny_in_overlay
+    ):
+        from dippy.core.config import _merge_configs
+
+        symbol_config = Config(python_allow_symbols=["sys.stdin"])
+        deny_config = Config(python_deny_modules=["sys"])
+        if deny_in_overlay:
+            config = _merge_configs(symbol_config, deny_config)
+        else:
+            config = _merge_configs(deny_config, symbol_config)
+
+        result = check("python -c 'from sys import stdin'", config=config)
+
+        assert needs_confirmation(result)
+
+    def test_module_allow_remains_module_wide(self):
+        violations = self.analyze(
+            "from custom import allowed, unlisted",
+            allowed_symbols={"custom": frozenset({"allowed"})},
+            allow_modules=frozenset({"custom"}),
+        )
+
+        assert violations == []
+
+    def test_existing_module_allow_overrides_same_exact_module_deny(self):
+        violations = self.analyze(
+            "import custom",
+            allow_modules=frozenset({"custom"}),
+            deny_modules=frozenset({"custom"}),
+            allowed_symbols={"custom": frozenset({"allowed"})},
+        )
+
+        assert violations == []
+
+    def test_dotted_symbol_requires_exact_module(self):
+        allowed_symbols = {"package.api": frozenset({"value"})}
+
+        exact = self.analyze(
+            "from package.api import value",
+            allowed_symbols=allowed_symbols,
+        )
+        different_module = self.analyze(
+            "from package import value",
+            allowed_symbols=allowed_symbols,
+        )
+
+        assert exact == []
+        assert [(v.kind, v.detail) for v in different_module] == [
+            ("import", "unknown module: package")
+        ]
+
+    def test_denied_root_blocks_dotted_symbol(self):
+        violations = self.analyze(
+            "from package.api import value",
+            allowed_symbols={"package.api": frozenset({"value"})},
+            deny_modules=frozenset({"package"}),
+        )
+
+        assert [(v.kind, v.detail) for v in violations] == [
+            ("import", "dangerous module: package.api")
+        ]
+
+    def test_symbol_can_narrow_a_hardcoded_dangerous_root(self):
+        violations = self.analyze(
+            "from http.client import HTTPConnection",
+            allowed_symbols={"http.client": frozenset({"HTTPConnection"})},
+        )
+
+        assert violations == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from .json import dumps",
+            "from ..json import dumps",
+            "from ...sys import stdin",
+            "from . import value",
+        ],
+    )
+    def test_every_relative_import_is_rejected_before_allowances(self, source):
+        violations = self.analyze(
+            source,
+            allowed_symbols={
+                "json": frozenset({"dumps"}),
+                "sys": frozenset({"stdin"}),
+            },
+            allow_modules=frozenset({"json"}),
+        )
+
+        assert [(v.kind, v.detail) for v in violations] == [
+            ("import", "relative import not allowed")
+        ]
+
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            ("module = __import__('sys')", "builtin"),
+            ("import importlib\nimportlib.import_module('sys')", "import"),
+        ],
+    )
+    def test_dynamic_import_paths_remain_blocked(self, source, kind):
+        violations = self.analyze(
+            source,
+            allowed_symbols={"sys": frozenset({"stdin"})},
+        )
+
+        assert any(violation.kind == kind for violation in violations)
+
+    def test_mixed_multi_name_import_reports_only_unlisted_names(self):
+        violations = self.analyze(
+            "from sys import stdin, exit, stdout as output, modules",
+            allowed_symbols={"sys": frozenset({"stdin", "stdout"})},
+        )
+
+        assert [(v.kind, v.detail) for v in violations] == [
+            ("symbol", "disallowed import from sys: exit"),
+            ("symbol", "disallowed import from sys: modules"),
+        ]
+
+    @pytest.mark.parametrize(
+        ("source", "expected_kind"),
+        [
+            ("import sys", "import"),
+            ("from sys import exit", "symbol"),
+            ("from sys import *", "symbol"),
+            ("from .sys import stdin", "import"),
+            ("from sys import stdin\nstdin.read()", "method"),
+        ],
+    )
+    def test_violation_kinds(self, source, expected_kind):
+        violations = self.analyze(
+            source,
+            allowed_symbols={"sys": frozenset({"stdin"})},
+        )
+
+        assert expected_kind in {violation.kind for violation in violations}

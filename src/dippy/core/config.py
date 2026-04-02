@@ -10,6 +10,7 @@ from pathlib import Path
 
 # Valid Python module path: dotted identifiers (e.g. "numpy", "http.server")
 _MODULE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def _parse_module_name(rest: str) -> str:
@@ -30,6 +31,23 @@ def _parse_module_name(rest: str) -> str:
     if not _MODULE_RE.match(mod):
         raise ValueError(f"invalid Python module name: {mod!r}")
     return mod
+
+
+def _parse_symbol_name(rest: str) -> str:
+    """Parse and validate a Python symbol in module.symbol form."""
+    if "#" in rest:
+        rest = rest[: rest.index("#")].rstrip()
+    if not rest:
+        raise ValueError("requires a symbol name")
+    parts = rest.split()
+    if len(parts) != 1:
+        raise ValueError(f"requires exactly one symbol name, got: {rest!r}")
+
+    symbol = parts[0]
+    module, separator, name = symbol.rpartition(".")
+    if not separator or not _MODULE_RE.match(module) or not _IDENTIFIER_RE.match(name):
+        raise ValueError(f"invalid Python symbol name: {symbol!r}")
+    return symbol
 
 
 # Cache home directory at module load - fails fast if HOME is unset
@@ -91,6 +109,9 @@ class Config:
 
     python_deny_modules: list[str] = field(default_factory=list)
     """Extra modules to treat as dangerous for Python static analysis."""
+
+    python_allow_symbols: list[str] = field(default_factory=list)
+    """Symbols allowed via ``from module import symbol`` imports."""
 
     default: str = "ask"  # 'allow' | 'ask'
     log: Path | None = None  # None = no logging
@@ -155,6 +176,7 @@ def _merge_configs(base: Config, overlay: Config) -> Config:
         # Python module lists accumulate
         python_allow_modules=base.python_allow_modules + overlay.python_allow_modules,
         python_deny_modules=base.python_deny_modules + overlay.python_deny_modules,
+        python_allow_symbols=base.python_allow_symbols + overlay.python_allow_symbols,
         # Settings: overlay wins if set
         default=overlay.default if overlay.default != "ask" else base.default,
         log=overlay.log if overlay.log is not None else base.log,
@@ -244,6 +266,7 @@ def parse_config(text: str, source: str | None = None) -> Config:
     aliases: dict[str, str] = {}
     python_allow_modules: list[str] = []
     python_deny_modules: list[str] = []
+    python_allow_symbols: list[str] = []
     settings: dict[str, bool | int | str | Path] = {}
     prefix = f"{source}: " if source else ""
 
@@ -364,6 +387,10 @@ def parse_config(text: str, source: str | None = None) -> Config:
                 mod = _parse_module_name(rest)
                 python_deny_modules.append(mod)
 
+            elif directive == "python-allow-symbol":
+                symbol = _parse_symbol_name(rest)
+                python_allow_symbols.append(symbol)
+
             elif directive == "set":
                 _apply_setting(settings, rest)
 
@@ -382,6 +409,7 @@ def parse_config(text: str, source: str | None = None) -> Config:
         aliases=aliases,
         python_allow_modules=python_allow_modules,
         python_deny_modules=python_deny_modules,
+        python_allow_symbols=python_allow_symbols,
         default=settings.get("default", "ask"),
         log=settings.get("log"),
         log_full=settings.get("log_full", False),

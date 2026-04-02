@@ -92,6 +92,34 @@ deny-redirect **/.env* "Never write secrets, ask me to do it"
 
 Dippy reads config from `~/.dippy/config` (global) and `.dippy` in your project root.
 
+### Python symbol allowlisting
+
+Use `python-allow-symbol module.symbol` to permit one exact symbol from a module
+that Python static analysis would otherwise reject:
+
+```text
+python-allow-symbol sys.stdin
+```
+
+The allowance applies only to an absolute, exact-module import such as
+`from sys import stdin`. Aliases are permitted (`from sys import stdin as input`),
+but `import sys`, wildcard imports, relative imports, symbols not listed in the
+configuration, and imports from a different module remain subject to the normal
+Python safety checks. Every name in a multi-name import must be allowed.
+
+`python-deny-module` takes precedence over symbol allowances, including when the
+directives come from different merged configuration scopes. A
+`python-allow-module` remains a module-wide allowance and therefore does not
+restrict that module to listed symbols. Existing module-directive semantics are
+unchanged: an exact `python-allow-module` entry overrides an exact
+`python-deny-module` entry.
+
+This directive is a trust decision, not a Python sandbox. Importing a symbol can
+execute the module's top-level code, and using the imported object may have side
+effects that static analysis cannot prove safe. Only allow symbols from modules
+and implementations you trust. Other AST safety checks still apply after the
+import is accepted.
+
 **Full documentation:** [Dippy Wiki](https://github.com/ldayton/Dippy/wiki)
 
 ---

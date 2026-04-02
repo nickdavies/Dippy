@@ -453,6 +453,17 @@ class Violation(NamedTuple):
     detail: str
 
 
+def _build_allowed_symbols(symbols: list[str]) -> dict[str, frozenset[str]]:
+    """Group validated ``module.symbol`` config values by module."""
+    grouped: dict[str, set[str]] = {}
+    for symbol in symbols:
+        module, separator, name = symbol.rpartition(".")
+        if not separator or not module or not name:
+            continue
+        grouped.setdefault(module, set()).add(name)
+    return {module: frozenset(names) for module, names in grouped.items()}
+
+
 class SafetyAnalyzer(ast.NodeVisitor):
     """
     AST visitor that checks Python code for safety.
@@ -466,15 +477,18 @@ class SafetyAnalyzer(ast.NodeVisitor):
         allow_print: bool = True,
         extra_safe_modules: frozenset[str] = frozenset(),
         extra_deny_modules: frozenset[str] = frozenset(),
+        allowed_symbols: dict[str, frozenset[str]] | None = None,
     ):
         self.violations: list[Violation] = []
         self.allow_print = allow_print
         self.safe_modules = SAFE_MODULES | extra_safe_modules
         # User-configured allow explicitly overrides hardcoded dangerous list.
         # Only exact matches are removed — submodules must be allowed separately.
+        self.explicit_deny_modules = extra_deny_modules - extra_safe_modules
         self.deny_modules = (
             DANGEROUS_MODULES | extra_deny_modules
         ) - extra_safe_modules
+        self.allowed_symbols = allowed_symbols or {}
 
     def _add(self, node: ast.AST, kind: str, detail: str) -> None:
         self.violations.append(
@@ -496,19 +510,44 @@ class SafetyAnalyzer(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.level != 0:
+            self._add(node, "import", "relative import not allowed")
+            return
+
         if node.module is None:
-            self._add(node, "import", "relative import without module")
+            self._add(node, "import", "import without module")
             return
 
         module = node.module
         root = module.split(".")[0]
 
-        if module in self.deny_modules or root in self.deny_modules:
+        if module in self.explicit_deny_modules or root in self.explicit_deny_modules:
             self._add(node, "import", f"dangerous module: {module}")
+        elif module in self.deny_modules or root in self.deny_modules:
+            if module in self.allowed_symbols:
+                self._check_allowed_symbols(node, module)
+            else:
+                self._add(node, "import", f"dangerous module: {module}")
         elif module not in self.safe_modules and root not in self.safe_modules:
-            self._add(node, "import", f"unknown module: {module}")
+            if module in self.allowed_symbols:
+                self._check_allowed_symbols(node, module)
+            else:
+                self._add(node, "import", f"unknown module: {module}")
 
         self.generic_visit(node)
+
+    def _check_allowed_symbols(self, node: ast.ImportFrom, module: str) -> None:
+        """Require every imported name to be explicitly allowed for the module."""
+        allowed = self.allowed_symbols[module]
+        for alias in node.names:
+            if alias.name == "*":
+                self._add(node, "symbol", f"wildcard import from {module}")
+            elif alias.name not in allowed:
+                self._add(
+                    node,
+                    "symbol",
+                    f"disallowed import from {module}: {alias.name}",
+                )
 
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
@@ -633,6 +672,7 @@ def analyze_python_source(
     allow_print: bool = True,
     extra_safe_modules: frozenset[str] = frozenset(),
     extra_deny_modules: frozenset[str] = frozenset(),
+    allowed_symbols: dict[str, frozenset[str]] | None = None,
 ) -> list[Violation]:
     """
     Analyze Python source code for safety violations.
@@ -648,6 +688,7 @@ def analyze_python_source(
         allow_print=allow_print,
         extra_safe_modules=extra_safe_modules,
         extra_deny_modules=extra_deny_modules,
+        allowed_symbols=allowed_symbols,
     )
     analyzer.visit(tree)
     return analyzer.violations
@@ -657,6 +698,7 @@ def analyze_python_file(
     path: Path,
     extra_safe_modules: frozenset[str] = frozenset(),
     extra_deny_modules: frozenset[str] = frozenset(),
+    allowed_symbols: dict[str, frozenset[str]] | None = None,
 ) -> tuple[bool, str]:
     """
     Analyze a Python file for safety.
@@ -691,6 +733,7 @@ def analyze_python_file(
         source,
         extra_safe_modules=extra_safe_modules,
         extra_deny_modules=extra_deny_modules,
+        allowed_symbols=allowed_symbols,
     )
 
     if violations:
@@ -808,6 +851,9 @@ def classify(ctx: HandlerContext) -> Classification:
     # Build extra module sets from config
     extra_safe = frozenset(config.python_allow_modules) if config else frozenset()
     extra_deny = frozenset(config.python_deny_modules) if config else frozenset()
+    allowed_symbols = (
+        _build_allowed_symbols(config.python_allow_symbols) if config else None
+    )
 
     desc = get_description(tokens)
 
@@ -838,7 +884,10 @@ def classify(ctx: HandlerContext) -> Classification:
         if not code.strip():
             return Classification("ask", description=desc)
         violations = analyze_python_source(
-            code, extra_safe_modules=extra_safe, extra_deny_modules=extra_deny
+            code,
+            extra_safe_modules=extra_safe,
+            extra_deny_modules=extra_deny,
+            allowed_symbols=allowed_symbols,
         )
         if not violations:
             return Classification("allow", description=f"{desc} (analyzed)")
@@ -871,7 +920,10 @@ def classify(ctx: HandlerContext) -> Classification:
 
     # Try to analyze the script
     is_safe, reason = analyze_python_file(
-        script_path, extra_safe_modules=extra_safe, extra_deny_modules=extra_deny
+        script_path,
+        extra_safe_modules=extra_safe,
+        extra_deny_modules=extra_deny,
+        allowed_symbols=allowed_symbols,
     )
 
     if is_safe:

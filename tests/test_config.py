@@ -2061,3 +2061,42 @@ class TestPythonModuleDirectives:
         """Invalid module name in deny should also be rejected."""
         cfg = parse_config("python-deny-module not-valid!")
         assert cfg.python_deny_modules == []
+
+
+class TestPythonSymbolDirectives:
+    """Tests for the python-allow-symbol directive."""
+
+    def test_symbols_are_parsed_exactly(self):
+        cfg = parse_config(
+            "python-allow-symbol sys.stdin # standard input\n"
+            "python-allow-symbol package.module.value"
+        )
+
+        assert cfg.python_allow_symbols == ["sys.stdin", "package.module.value"]
+
+    @pytest.mark.parametrize(
+        "symbol",
+        [
+            "",
+            "sys",
+            ".stdin",
+            "sys.",
+            "sys..stdin",
+            "123sys.stdin",
+            "sys.123stdin",
+            "sys.stdin extra",
+            "sys.*",
+        ],
+    )
+    def test_malformed_symbol_is_skipped(self, symbol):
+        cfg = parse_config(f"python-allow-symbol {symbol}")
+
+        assert cfg.python_allow_symbols == []
+
+    def test_merge_accumulates_symbols_in_scope_order(self):
+        base = Config(python_allow_symbols=["sys.stdin"])
+        overlay = Config(python_allow_symbols=["sys.stdout"])
+
+        merged = _merge_configs(base, overlay)
+
+        assert merged.python_allow_symbols == ["sys.stdin", "sys.stdout"]
