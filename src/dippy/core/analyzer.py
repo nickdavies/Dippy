@@ -462,11 +462,12 @@ def _analyze_simple_command(
         return Decision("allow", base)
 
     # 4. Version/help checks
-    if _is_version_or_help(tokens):
+    handler = get_handler(base)
+    handles_help = handler and getattr(handler.classify, "_dippy_handles_help", False)
+    if _is_version_or_help(tokens) and not handles_help:
         return Decision("allow", f"{base} --help")
 
     # 5. CLI-specific handlers
-    handler = get_handler(base)
     if handler:
         result = handler.classify(
             HandlerContext(tokens, config=config, word_has_expansions=token_expansions)
